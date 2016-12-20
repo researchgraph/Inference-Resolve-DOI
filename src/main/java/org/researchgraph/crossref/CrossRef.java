@@ -2,33 +2,18 @@ package org.researchgraph.crossref;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 import javax.ws.rs.core.MediaType;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.lang3.StringUtils;
-import org.researchgraph.graph.Graph;
-import org.researchgraph.graph.GraphKey;
-import org.researchgraph.graph.GraphNode;
-import org.researchgraph.graph.GraphRelationship;
-import org.researchgraph.graph.GraphSchema;
-import org.researchgraph.graph.GraphUtils;
+import org.apache.commons.lang.StringUtils;
 
 import com.amazonaws.auth.InstanceProfileCredentialsProvider;
 import com.amazonaws.services.s3.AmazonS3;
@@ -54,8 +39,6 @@ import com.sun.jersey.api.client.ClientResponse;
 public class CrossRef {
 	public static final String AUTHORITY_CROSSREF = "CrossRef";
 	
-	private static final String SOURCE_CROSSREF = "crossref";
-	private static final String SOURCE_URL_CROSSREF ="crossref.org";
 	
 	private static final String URL_CROSSREF = "http://api.crossref.org/";
 	private static final String URL_CROSSREF_DOI = "http://doi.crossref.org/";
@@ -99,14 +82,6 @@ public class CrossRef {
 	
 	private final File cache;
 	
-	private final Connection conn;
-	private final PreparedStatement selectAutority;
-	private final PreparedStatement selectWork;
-	private final PreparedStatement selectAuthors;
-	private final PreparedStatement insertAutority;
-	private final PreparedStatement insertWork;
-	private final PreparedStatement insertAuthor;
-	
 	private final AmazonS3 s3Client;
 	private final String s3Bucket;
 	private final String s3Prefix;
@@ -120,17 +95,7 @@ public class CrossRef {
 	private static final TypeReference<Response<Item>> itemType = new TypeReference<Response<Item>>() {};
 	private static final TypeReference<List<Authority>> authorityListType = new TypeReference<List<Authority>>() {};
 
-	
-	public CrossRef(String cache, String host, int port, String user, String password, String database) throws SQLException {
-		this.conn = DriverManager.getConnection("jdbc:mysql://" + host + ":" + port + "/" + database + "?user=" + user + "&password=" + password);
-		
-		this.selectAutority = conn.prepareStatement("SELECT autority FROM doi_autority WHERE doi LIKE ?");
-		this.selectWork = conn.prepareStatement("SELECT resolution_id, url, title, year FROM doi_resolution WHERE doi LIKE ?");
-		this.selectAuthors = conn.prepareStatement("SELECT first_name, last_name, full_name, orcid FROM doi_author WHERE resolution_id=?");
-		this.insertAutority = conn.prepareStatement("INSERT INTO doi_autority SET doi=?, autority=?, created=NOW()");
-		this.insertWork = conn.prepareStatement("INSERT INTO doi_resolution SET doi=?, url=?, title=?, year=?, created=NOW()", Statement.RETURN_GENERATED_KEYS);
-		this.insertAuthor = conn.prepareStatement("INSERT INTO doi_author SET resolution_id=?, first_name=?, last_name=?, full_name=?, orcid=?, created=NOW()");
-		
+	public CrossRef(String cache) {
 		URI uri = URI.create(cache);
 		if (null == uri.getScheme()) {
 			// local cache
@@ -155,9 +120,8 @@ public class CrossRef {
 		} else {
 			throw new IllegalArgumentException("Invalid cache sheme: " + uri.getScheme());
 		}
-		
-		
 	}
+	
 	/*
 	static {
 		SimpleModule module = new SimpleModule("DateModule");
@@ -195,44 +159,6 @@ public class CrossRef {
 		return null;
 	}
 	
-	private GraphNode createPublication(String doi, String url, String title, String year) {
-		//String doiUri = GraphUtils.generateDoiUri(doi);
-		return GraphNode.builder()
-				.withKey(new GraphKey(SOURCE_CROSSREF, url))
-				.withNodeSource(SOURCE_URL_CROSSREF)
-				.withNodeType(GraphUtils.TYPE_PUBLICATION)
-				.withLabel(SOURCE_CROSSREF)
-				.withLabel(GraphUtils.TYPE_PUBLICATION)
-				.withProperty(GraphUtils.PROPERTY_DOI, doi)
-				.withProperty(GraphUtils.PROPERTY_URL, url)
-				.withProperty(GraphUtils.PROPERTY_TITLE, title)
-				.withProperty(GraphUtils.PROPERTY_PUBLISHED_YEAR, year)
-				.build();
-	}
-	
-	private GraphNode createAuthor(String key, String firstName, String lastName, String fullName, String orcid) {
-		return GraphNode.builder()
-				.withKey(new GraphKey(SOURCE_CROSSREF, key))
-				.withNodeSource(SOURCE_URL_CROSSREF)
-				.withNodeType(GraphUtils.TYPE_RESEARCHER)
-				.withLabel(SOURCE_CROSSREF)
-				.withLabel(GraphUtils.TYPE_RESEARCHER)
-				.withProperty(GraphUtils.PROPERTY_FIRST_NAME, firstName)
-				.withProperty(GraphUtils.PROPERTY_LAST_NAME, lastName)
-				.withProperty(GraphUtils.PROPERTY_FULL_NAME, fullName)
-				.withProperty(GraphUtils.PROPERTY_ORCID_ID, orcid)
-				.build();
-		
-	}
-	
-	private GraphRelationship createRelationship(GraphNode publication, GraphNode author) { 
-		return GraphRelationship.builder()
-				.withRelationship(GraphUtils.RELATIONSHIP_RELATED_TO)
-				.withStart(publication.getKey())
-				.withEnd(author.getKey())
-				.build();
-	}
-
 	/**
 	 * Request work by doi identificator
 	 * @param doi String containing doi identificator
@@ -268,177 +194,26 @@ public class CrossRef {
 	
 	public String requestAuthority(String doi) {
 		try {
-			String autority = getAutorityFromDatabase(doi);
-			if (StringUtils.isEmpty(autority)) {
-				String encodedDoi = encodeAuthorityDoi(doi);
-				String cachedFile = getAutorityFileName(encodedDoi);
-				String json = getCahcedFile(cachedFile);
-				
-				if (null == json) {
-					json = getAuthority(encodedDoi);
-					saveCacheFile(cachedFile, json);
-				}
-				
-				if (null != json) {
-					autority = parseAuthority(json);
-					if (!StringUtils.isEmpty(autority)) {
-						saveAutorityToDatabase(doi, autority);
-					} else {
-						System.err.println("Inavlid response");
-					}
-				}
+			String encodedDoi = encodeAuthorityDoi(doi);
+			String cachedFile = getAutorityFileName(encodedDoi);
+			String json = getCahcedFile(cachedFile);
+			
+			if (null == json) {
+				json = getAuthority(encodedDoi);
+				saveCacheFile(cachedFile, json);
 			}
 			
-			return autority;
+			if (null != json) {
+				return parseAuthority(json);
+			}
+
 		} catch (Exception e) {
 			e.printStackTrace();
 		} 
 		
 		return null;
 	}
-	
-	private String getAutorityFromDatabase(String doi) throws SQLException {
-		selectAutority.setString(1, doi);
-		try (ResultSet rs = selectAutority.executeQuery()) {
-			if (rs.next()) {
-				return rs.getString(1);
-			}
-		}
 		
-		return null;
-	}
-	
-	private boolean saveAutorityToDatabase(String doi, String autority) throws SQLException {
-		insertAutority.setString(1, doi);
-		insertAutority.setString(2, autority);
-		return insertAutority.execute();
-	}
-	
-	private Graph getWorkFromDatabase(String doi) throws SQLException {
-		
-		selectWork.setString(1, doi);
-		try (ResultSet rsWork = selectWork.executeQuery()) {
-			if (rsWork.next()) {
-				Graph graph = new Graph();
-				
-				long resolutionId = rsWork.getLong(1);
-				String key = rsWork.getString(2);
-				String title = rsWork.getString(3);
-				String year = rsWork.getString(4);
-				
-				GraphNode publication = createPublication(doi, key, title, year);
-				
-				graph.addNode(publication);
-					
-				selectAuthors.setLong(1, resolutionId);
-				try (ResultSet rsAuthor = selectAuthors.executeQuery()) {
-					while (rsAuthor.next()) {
-						String firstName = rsAuthor.getString(1);
-						String lastName = rsAuthor.getString(2);
-						String fullName = rsAuthor.getString(3);
-						String orcid = rsAuthor.getString(4);
-						
-						publication.addProperty(GraphUtils.PROPERTY_AUTHORS, fullName);
-						
-						GraphNode author = createAuthor(key, firstName, lastName, fullName, orcid);
-						
-						graph.addNode(author);
-						graph.addRelationship(createRelationship(publication, author));
-					}
-				}
-				
-				return graph;
-				
-			}
-		}
-		
-		return null;
-	}
-	
-	private Long saveWorkToDatabase(String doi, String url, String title, String year) throws SQLException {
-		insertWork.setString(1, doi);
-		insertWork.setString(2, url);
-		insertWork.setString(3, title);
-		insertWork.setString(4, year);
-		if (insertWork.execute()) {
-			try (ResultSet rs = insertWork.getGeneratedKeys()) {
-	            if(rs.next())
-	            {
-	                return rs.getLong(1);
-	            }
-			}
-		}
-		
-		return null;
-	}
-
-	private boolean saveAuthorToDatabase(long resolutionId, String firstName, String lastName, 
-			String fullName, String orcid) throws SQLException {
-		insertAuthor.setLong(1, resolutionId);
-		insertAuthor.setString(2, firstName);
-		insertAuthor.setString(3, lastName);
-		insertAuthor.setString(4, fullName);
-		insertAuthor.setString(5, orcid);
-		return insertAuthor.execute();
-	}
-
-	
-	private String resolveString(List<String> list) {
-		return null != list && list.size() > 0 ? list.get(0) : null;
-	}
-	
-	public Graph requestGraph(String doi) {
-		try {
-			Graph graph = getWorkFromDatabase(doi);
-			if (null == graph) {
-				String authority = requestAuthority(doi);
-				if (AUTHORITY_CROSSREF.equals(authority)) {
-					Item work = requestWork(doi);
-					if (null != work) {
-						String title = resolveString(work.getTitle());
-						if (null != title) {
-							String key = GraphUtils.generateDoiUri(doi);
-							String year = work.getIssuedString();
-							graph = new Graph();
-							GraphNode publication = createPublication(doi, key, title, year);
-							Long workId = saveWorkToDatabase(doi, key, title, year);
-							graph.addNode(publication);
-							
-                            if (null != workId && null != work.getAuthor()) {
-                                for (Author author : work.getAuthor()) {
-                                        String firstName = author.getGiven();
-                                        String lastName = author.getFamily();
-                                        String fullName = author.getFullName();
-                                        String orcid = author.getOrcid();
-                                        String authorKey = doi + ":" + fullName;
-
-                                        publication.addProperty(GraphUtils.PROPERTY_AUTHORS, fullName);
-                                        
-                                        GraphNode researcher = createAuthor(authorKey, 
-                                        		firstName, lastName, fullName, orcid);
-                                        saveAuthorToDatabase(workId, firstName, lastName, 
-                                    			fullName, orcid); 
-
-                                        graph.addNode(researcher);
-                                        graph.addRelationship(createRelationship(publication, researcher));
-                                }
-                            }
-						}
-					}
-				}
-			}
-			
-			
-			return graph;
-		
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-		
-		return null;
-	}
-	
-	
 	private String get( final String url ) {
 		System.out.println("Downloading: " + url);
 						
@@ -592,16 +367,5 @@ public class CrossRef {
 
 	public void setDbaEnabled(boolean dbaEnabled) {
 		this.dbaEnabled = dbaEnabled;
-	}
-	
-	public List<GraphSchema> getSchema() {
-		List<GraphSchema> schemas = new ArrayList<GraphSchema>();
-		schemas.add(new GraphSchema(SOURCE_CROSSREF, GraphUtils.PROPERTY_KEY, true));
-		schemas.add(new GraphSchema(SOURCE_CROSSREF, GraphUtils.PROPERTY_DOI, false));
-		schemas.add(new GraphSchema(SOURCE_CROSSREF, GraphUtils.PROPERTY_URL, false));
-		//schemas.add(new GraphSchema(SOURCE_CROSSREF, GraphUtils.PROPERTY_ORCID_ID, false));
-		
-		return schemas;
-	}
-	
+	}	
 }
