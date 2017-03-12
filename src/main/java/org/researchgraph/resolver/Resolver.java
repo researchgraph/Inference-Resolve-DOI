@@ -20,8 +20,8 @@ public class Resolver implements Closeable {
 	private final CrossRef crossref;
 	
 	private final Connection con;
-	private final PreparedStatement selectAutority;
-	private final PreparedStatement insertAutority;
+	private final PreparedStatement selectAuthority;
+	private final PreparedStatement insertAuthority;
 	private final PreparedStatement insertWork;
 	private final PreparedStatement insertAuthor;
 	
@@ -30,14 +30,14 @@ public class Resolver implements Closeable {
 		
 		this.con = DriverManager.getConnection("jdbc:mysql://" + host + ":" + port + "/" + database + "?user=" + user + "&password=" + password);
 		
-		this.selectAutority = con.prepareStatement("SELECT autority FROM doi_autority WHERE doi LIKE ?");
-		this.insertAutority = con.prepareStatement("INSERT INTO doi_autority SET doi=?, autority=?, created=NOW()");
+		this.selectAuthority = con.prepareStatement("SELECT autority FROM doi_autority WHERE doi LIKE ?");
+		this.insertAuthority = con.prepareStatement("INSERT INTO doi_autority SET doi=?, autority=?, created=NOW()");
 		this.insertWork = con.prepareStatement("INSERT INTO doi_resolution SET doi=?, url=?, title=?, year=?, resolved=NOW()", Statement.RETURN_GENERATED_KEYS);
 		this.insertAuthor = con.prepareStatement("INSERT INTO doi_author SET resolution_id=?, first_name=?, last_name=?, full_name=?, orcid=?");
 	}
 	
-	private static boolean isCrossrefAutority(String autority) {
-		return CrossRef.AUTHORITY_CROSSREF.equals(autority);
+	private static boolean isCrossbredAuthority(String authority) {
+		return CrossRef.AUTHORITY_CROSSREF.equals(authority);
 	}
 	
 	public void resolveDOI() throws Exception {
@@ -53,8 +53,8 @@ public class Resolver implements Closeable {
 				long resolutionId = rs.getLong(1);
 				String doi = rs.getString(2);
 				
-				String authority = resolveAutority(doi);
-				if (isCrossrefAutority(authority)) {
+				String authority = resolveAuthority(doi);
+				if (isCrossbredAuthority(authority)) {
 					resolveCrossRefDOI(resolutionId, doi);
 				}
 				
@@ -69,8 +69,8 @@ public class Resolver implements Closeable {
 		System.out.println("Done. Processed " + counter + " DOI's");
 	}
 	
-	private String resolveAutority(String doi) throws SQLException {
-		String autority = getAutorityFromDatabase(doi);
+	private String resolveAuthority(String doi) throws SQLException {
+		String autority = getAuthorityFromDatabase(doi);
 		if (StringUtils.isEmpty(autority)) {
 			autority = crossref.requestAuthority(doi);
 			if (!StringUtils.isEmpty(autority)) {
@@ -124,9 +124,9 @@ public class Resolver implements Closeable {
 		return null != list && list.size() > 0 ? list.get(0) : null;
 	}
 	
-	private String getAutorityFromDatabase(String doi) throws SQLException {
-		selectAutority.setString(1, doi);
-		try (ResultSet rs = selectAutority.executeQuery()) {
+	private String getAuthorityFromDatabase(String doi) throws SQLException {
+		selectAuthority.setString(1, doi);
+		try (ResultSet rs = selectAuthority.executeQuery()) {
 			if (rs.next()) {
 				return rs.getString(1);
 			}
@@ -136,9 +136,9 @@ public class Resolver implements Closeable {
 	}
 	
 	private boolean saveAutorityToDatabase(String doi, String autority) throws SQLException {
-		insertAutority.setString(1, doi);
-		insertAutority.setString(2, autority);
-		return insertAutority.execute();
+		insertAuthority.setString(1, doi);
+		insertAuthority.setString(2, autority);
+		return insertAuthority.execute();
 	}
 	
 	
